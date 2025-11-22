@@ -266,7 +266,7 @@ pub async fn validate_credentials(
 
     // Check for SAML session token
     if user_password.starts_with("saml_session_") {
-        match crate::service::session::get(user_id).await {
+        match crate::service::db::session::get(user_id).await {
             Ok(session_token) => {
                 if session_token.eq(&user_password) {
                     return Ok(TokenValidationResponse {
