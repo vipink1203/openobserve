@@ -21,7 +21,7 @@ services:
   openobserve:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: deploy/build/Dockerfile
     container_name: openobserve-with-saml
     ports:
       - "5080:5080"
