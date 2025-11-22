@@ -256,7 +256,14 @@ pub fn get_basic_routes(svc: &mut web::ServiceConfig) {
             .wrap(cors.clone())
             .service(users::authentication)
             .service(users::get_presigned_url)
-            .service(users::get_auth),
+            .service(users::get_auth)
+            .service(
+                web::scope("/saml")
+                    .service(crate::handler::http::auth::saml::saml_login)
+                    .service(crate::handler::http::auth::saml::saml_acs)
+                    .service(crate::handler::http::auth::saml::saml_metadata)
+                    .service(crate::handler::http::auth::saml::saml_logout),
+            ),
     );
 
     {
@@ -405,6 +412,9 @@ pub fn get_service_routes(svc: &mut web::ServiceConfig) {
         .service(organization::settings::delete_logo)
         .service(organization::settings::set_logo_text)
         .service(organization::settings::delete_logo_text)
+        .service(saml::get_config)
+        .service(saml::update_config)
+        .service(saml::delete_config)
         .service(organization::org::org_summary)
         .service(organization::org::get_user_passcode)
         .service(organization::org::update_user_passcode)
