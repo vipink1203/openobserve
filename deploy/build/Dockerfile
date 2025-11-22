@@ -14,6 +14,16 @@ FROM public.ecr.aws/zinclabs/rust:bookworm-sccache AS builder
 # RUN diff -u <(rustc --print cfg) <(rustc -C target-cpu=native --print cfg)
 RUN rustc --version && sccache --version
 
+# Install dependencies for SAML (xmlsec feature)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libclang-dev \
+    clang \
+    pkg-config \
+    libxml2-dev \
+    libxmlsec1-dev \
+    libxmlsec1-openssl \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /openobserve
 COPY . /openobserve
 COPY --from=webBuilder /web/dist web/dist
@@ -22,8 +32,19 @@ RUN cargo build --release
 
 # FROM gcr.io/distroless/cc as runtime
 FROM public.ecr.aws/debian/debian:bookworm-slim AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
-RUN apt-get install -y curl htop iftop sysstat procps lsof net-tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    htop \
+    iftop \
+    sysstat \
+    procps \
+    lsof \
+    net-tools \
+    libxml2 \
+    libxmlsec1 \
+    libxmlsec1-openssl \
+    && rm -rf /var/lib/apt/lists/*
 RUN update-ca-certificates
 COPY --from=builder /openobserve/target/release/openobserve /
 RUN ["/openobserve", "init-dir", "-p", "/data/"]
