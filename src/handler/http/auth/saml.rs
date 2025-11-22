@@ -237,16 +237,12 @@ pub async fn saml_acs(
         config::utils::rand::generate_random_string(32)
     );
 
-    // Store session
-    match crate::service::session::set(&email, &session_token, SAML_SESSION_DURATION).await {
-        Ok(_) => log::info!("Session created for SAML user: {}", email),
-        Err(e) => {
-            log::error!("Failed to create session: {}", e);
-            return Ok(
-                HttpResponse::InternalServerError().json("Failed to create user session")
-            );
-        }
+    // Store session (session_token is stored with email as key for validation)
+    if let Err(e) = crate::service::db::session::set(&email, &session_token).await {
+        log::error!("Failed to create session: {}", e);
+        return Ok(HttpResponse::InternalServerError().json("Failed to create user session"));
     }
+    log::info!("Session created for SAML user: {}", email);
 
     // Create auth cookie
     let tokens = AuthTokens {
