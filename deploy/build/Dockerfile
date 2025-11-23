@@ -29,7 +29,7 @@ COPY . /openobserve
 COPY --from=webBuilder /web/dist web/dist
 
 # Reduce memory usage during compilation
-ENV CARGO_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=1
 ENV CARGO_NET_RETRY=10
 RUN cargo build --release
 
