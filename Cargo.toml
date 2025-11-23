@@ -157,6 +157,7 @@ tracing-subscriber.workspace = true
 tempfile.workspace = true
 uaparser = "0.6.4"
 url.workspace = true
+urlencoding.workspace = true
 utoipa.workspace = true
 utoipa-swagger-ui.workspace = true
 version-compare = "0.2.0"
