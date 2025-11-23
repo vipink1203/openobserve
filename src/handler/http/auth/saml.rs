@@ -13,24 +13,23 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
-
 use actix_web::{HttpRequest, HttpResponse, cookie, get, http, post, web};
-use config::{Config, get_config, meta::user::UserRole, utils::base64};
+use config::{get_config, meta::user::UserRole, utils::base64};
 use samael::{
-    metadata::{ContactPerson, EntityDescriptor},
+    metadata::EntityDescriptor,
     service_provider::{ServiceProvider, ServiceProviderBuilder},
+    traits::ToXml,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    common::meta::user::{AuthTokens, SignInResponse},
+    common::meta::user::AuthTokens,
     service::users,
 };
 
 const SAML_SESSION_DURATION: i64 = 43200; // 12 hours
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct SAMLResponse {
     #[serde(rename = "SAMLResponse")]
     pub saml_response: String,
@@ -62,7 +61,6 @@ async fn get_service_provider() -> Result<ServiceProvider, Box<dyn std::error::E
         .acs_url(saml_config.acs_url)
         .idp_metadata(idp_metadata)
         .allow_idp_initiated(saml_config.allow_idp_initiated)
-        .contact_person(ContactPerson::default())
         .build()?;
 
     Ok(sp)
@@ -91,20 +89,33 @@ pub async fn saml_login(_req: HttpRequest) -> Result<HttpResponse, actix_web::Er
         }
     };
 
+    // Get IdP SSO URL from metadata
+    let idp_sso_url = sp
+        .idp_metadata
+        .idp_sso_descriptors
+        .first()
+        .and_then(|desc| desc.single_sign_on_services.first())
+        .map(|sso| sso.location.clone())
+        .ok_or_else(|| "IdP SSO URL not found in metadata")?;
+
     // Generate authentication request
-    match sp.create_authentication_request() {
+    match sp.make_authentication_request(&idp_sso_url) {
         Ok(authn_request) => {
-            let redirect_url = sp.redirect_url(&authn_request);
-            match redirect_url {
-                Ok(url) => Ok(HttpResponse::Found()
-                    .append_header((http::header::LOCATION, url))
-                    .finish()),
-                Err(e) => {
-                    log::error!("Failed to create redirect URL: {}", e);
-                    Ok(HttpResponse::InternalServerError()
-                        .json(format!("Failed to create authentication request: {}", e)))
-                }
-            }
+            // Serialize and encode the authentication request
+            let authn_xml = authn_request.to_xml().map_err(|e| {
+                log::error!("Failed to serialize AuthnRequest: {}", e);
+                format!("Failed to create authentication request: {}", e)
+            })?;
+
+            let encoded_request = base64::encode(&authn_xml);
+
+            // Build redirect URL with SAMLRequest parameter
+            let redirect_url = format!("{}?SAMLRequest={}", idp_sso_url,
+                urlencoding::encode(&encoded_request));
+
+            Ok(HttpResponse::Found()
+                .append_header((http::header::LOCATION, redirect_url))
+                .finish())
         }
         Err(e) => {
             log::error!("Failed to create authentication request: {}", e);
@@ -145,15 +156,9 @@ pub async fn saml_acs(
         }
     };
 
-    // Decode and validate SAML response
+    // Decode SAML response (base64 decode returns String)
     let saml_response_decoded = match base64::decode(&form.saml_response) {
-        Ok(decoded) => match String::from_utf8(decoded) {
-            Ok(xml) => xml,
-            Err(e) => {
-                log::error!("Invalid UTF-8 in SAML response: {}", e);
-                return Ok(HttpResponse::BadRequest().json("Invalid SAML response format"));
-            }
-        },
+        Ok(decoded) => decoded,
         Err(e) => {
             log::error!("Failed to decode SAML response: {}", e);
             return Ok(HttpResponse::BadRequest().json("Invalid SAML response encoding"));
@@ -179,15 +184,42 @@ pub async fn saml_acs(
         }
     };
 
-    // Extract user information from SAML assertion
+    // Extract email from SAML assertion
+    // First try to get from NameID in subject
     let email = assertion
-        .attribute_value(&saml_config.email_attribute)
-        .or_else(|| assertion.subject.as_ref()?.name_id.as_ref()?.value.as_deref())
-        .unwrap_or("")
+        .subject
+        .as_ref()
+        .and_then(|subj| subj.name_id.as_ref())
+        .map(|name_id| name_id.value.as_str())
+        .unwrap_or_else(|| {
+            // Fallback: try to extract from attributes
+            assertion
+                .attribute_statements
+                .as_ref()
+                .and_then(|statements| statements.first())
+                .and_then(|statement| {
+                    statement.attributes.iter().find(|attr| {
+                        attr.name.as_deref() == Some(&saml_config.email_attribute)
+                    })
+                })
+                .and_then(|attr| attr.values.first())
+                .and_then(|val| val.value.as_deref())
+                .unwrap_or("")
+        })
         .to_lowercase();
 
+    // Extract name from attributes
     let name = assertion
-        .attribute_value(&saml_config.name_attribute)
+        .attribute_statements
+        .as_ref()
+        .and_then(|statements| statements.first())
+        .and_then(|statement| {
+            statement.attributes.iter().find(|attr| {
+                attr.name.as_deref() == Some(&saml_config.name_attribute)
+            })
+        })
+        .and_then(|attr| attr.values.first())
+        .and_then(|val| val.value.as_deref())
         .unwrap_or(&email)
         .to_string();
 
@@ -207,8 +239,8 @@ pub async fn saml_acs(
         _ => UserRole::Admin,
     };
 
-    // Ensure user exists in the system
-    if let Err(e) = users::get_user(None, &email).await {
+    // Ensure user exists in the system (get_user returns Option)
+    if users::get_user(None, &email).await.is_none() {
         log::info!("Creating new user from SAML: {}", email);
         // User doesn't exist, create them
         let user_request = crate::common::meta::user::UserRequest {
@@ -218,9 +250,10 @@ pub async fn saml_acs(
             password: String::new(), // No password for SAML users
             role: crate::common::meta::user::UserOrgRole {
                 base_role: user_role,
-                custom: None,
+                custom_role: None,
             },
             is_external: true,
+            token: None,
         };
 
         if let Err(e) = users::post_user(&saml_config.default_org, user_request, &email).await {
@@ -314,7 +347,12 @@ pub async fn saml_metadata(_req: HttpRequest) -> Result<HttpResponse, actix_web:
 
     match sp.metadata() {
         Ok(metadata) => {
-            let xml = metadata.to_string();
+            // Use ToXml trait to convert to XML string
+            let xml = metadata.to_xml().map_err(|e| {
+                log::error!("Failed to serialize metadata: {}", e);
+                format!("Failed to generate metadata: {}", e)
+            })?;
+
             Ok(HttpResponse::Ok()
                 .content_type("application/xml")
                 .body(xml))

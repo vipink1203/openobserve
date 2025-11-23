@@ -28,6 +28,9 @@ WORKDIR /openobserve
 COPY . /openobserve
 COPY --from=webBuilder /web/dist web/dist
 
+# Reduce memory usage during compilation
+ENV CARGO_BUILD_JOBS=4
+ENV CARGO_NET_RETRY=10
 RUN cargo build --release
 
 # FROM gcr.io/distroless/cc as runtime
