@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use config::{meta::saml::SamlConfig, utils::json};
-use infra::errors::{Error, Result};
+use infra::errors::Result;
 
 use crate::service::db;
 
